@@ -1,2 +1,3 @@
-## GeoGenomics - Landsat Satellite for Genomics Study
+## GeoGenomics: study of satellite for Genomics
 
+This is a code archive repository for GEE and R codes in the project.

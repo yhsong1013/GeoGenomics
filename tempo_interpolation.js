@@ -4,6 +4,24 @@
  *
  * linear interpolation of landsat using modis data
  * for temporal resolution
+ *
+ * General outlite:
+ * I. set up working frame
+ *    aoi: area of interest
+ *    landsat:  landsat series, input should be 7 or 8
+ *    year: year of processing
+ *    cdlString: cropland data layer, need to modify the year
+ *    confBoudn: confidence level low bound of the cropland data
+ * II. Interpolation
+ *    1. process Landsat
+ *    2. process MODIS
+ *    3. join Landsat and MODIS series
+ *    4. Interpolate
+ * III. post-processing
+ *    1. mask to cultivated, high CDL confidence araa
+ *    2. reproject the data
+ *    3. export in batch
+ * IV. display data for visual check
  */
 
 /*****************************************************
@@ -14,13 +32,17 @@
 
 // load AOI (palouse) boundary which saved as GEE assets
 var aoi = ee.FeatureCollection("users/yhsong/palouse");
-
 var landsat = 8;
+var year = 2015;
+var cdlString = 'USDA/NASS/CDL/2015'
+var confBound = 85
+var myCRS = 'EPSG:32611'
 
 //set time period
-var compositestart = ee.Date('2013-04-01');
-var compositeend   = ee.Date('2013-10-01');
-
+var compositestart = ee.Date('2015-01-01');
+var compositeend   = ee.Date('2015-12-31');
+var cultMask = ee.Image(cdlString).select('cultivated').eq(2);
+var confMask = ee.Image(cdlString).select('confidence').gt(confBound);
 
 /** **************************************************
 *
@@ -30,12 +52,6 @@ var compositeend   = ee.Date('2013-10-01');
 
 // set up AOI boundary for plot -----
 var aoiBoundary = ee.Image().toByte().paint(aoi, 3, 5);
-Map.centerObject (aoi,9);
-Map.addLayer (aoiBoundary, {
-    palette: '000000,FF0000,00FF00,0000FF',
-    max: 3,
-    opacity: 0.5
-});
 
 // set up flow control for landsat collection ----
 if (landsat ==7) {
@@ -55,39 +71,19 @@ var startMillis = compositestart.millis();
 var endMillis   = compositeend.millis();
 var time = 'system:time_start';
 
-// Set up raster display parameters ----
-var lsVis = {min: 0,max: 5000, gamma: 1.4,
-              bands: ['B4', 'B3', 'B2'],
-};
-var ndviVis = {min: 0, max: 1,
-    palette: ['FF0000', 'FFC300', '6BA44E', '057811', '065292']
-};
-
-// use Cropland Data Layer to to exclude non-cultivar pixels
-var cdl = ee.Image('USDA/NASS/CDL/2017').clip(aoi);
-function maskCDL(image){
-      var mask = cdl.select('cultivated').eq(2)
-                    .and(cdl.select('confidence').gt(86));
-      return image.updateMask(mask);
-}
-
-/** **************************************************
+/*****************************************************
 *
 *        Landsat (Landsat 8 Surface Reflectance)
 *
 * ****************************************************/
 
-/**
- * CLOUD FILTER --------------
- * 'maskCloudLC' is a function to remvoe cloud and cloud shadow
- * cited from M. He et al, 2018, Remote Sensing
- */
+// CLOUD FILTER --------------
 var maskCloudLC = function(img){
    var clear = img.select('pixel_qa').bitwiseAnd(2).neq(0);
    return img.updateMask(clear);
 };
 
-// get Landsat data
+// get Landsat data --------------
 var bandNames = ee.List (['B2', 'B3', 'B4', 'B5', 'pixel_qa']);
 var ls = ee.ImageCollection(lsCollection)
           .select(bandNames)
@@ -96,9 +92,9 @@ var ls = ee.ImageCollection(lsCollection)
           .map(function(img) {return img.clip(aoi)})
           .map(maskCloudLC);
 print(ls, 'landsat');
-Map.addLayer (ls.mean(), lsVis, 'landsat collection');
 
 
+// get Landsat NDVI ------------
 var getLsNDVI = function(image){
   var doy=ee.Date(image.get('system:time_start')).getRelative('day','year');
   return image.normalizedDifference([nir,red]).rename('lsNDVI')
@@ -108,7 +104,6 @@ var getLsNDVI = function(image){
 // lsNDVI should be a list of NDVI images from landsat, each with one band
 var lsNDVI = ls.map(getLsNDVI);
 print(lsNDVI, 'ls ndvi');
-Map.addLayer (lsNDVI.mean(), ndviVis, 'landsat ndvi mean');
 
 /** **************************************************
 *
@@ -116,12 +111,7 @@ Map.addLayer (lsNDVI.mean(), ndviVis, 'landsat ndvi mean');
 *
 * ****************************************************/
 
-/**
- * get modis QA bands --------------
- * the function compute the bits needed to be extracted
- * returns a single band image of the extracted QA bits
- * then gives the extracted band a new namge
- */
+// get modis QA bands --------------
 var getQABits = function(image, start, end, newName) {
     var pattern = 0;
     for (var i = start; i <= end; i++) {
@@ -132,18 +122,14 @@ var getQABits = function(image, start, end, newName) {
                 .rightShift(start);
 };
 
-/**
- * MODIS cloud mask function --------------
- * based on the MODIS QA bands and the getQABits function
- * the function returns an image masking out cloudy areas.
- */
+// MODIS cloud mask function --------------
 var maskCloudMod = function(image) {
   var QA = image.select('QA');
   var internalCloud = getQABits(QA, 0, 1, 'MOD_LAND_QA');   // Get the MOD_LAND_QA bits
   return image.mask(internalCloud.eq(0));
 };
 
-//must use clip to get images for MT since MOD09Q1 is global mosaic already.
+// get MODIS::MOD09Q1
 var mod = ee.ImageCollection('MODIS/MOD09Q1')
             .filterDate(startMillis, endMillis)
             .map(function(img){return img.clip(aoi)})
@@ -151,6 +137,7 @@ var mod = ee.ImageCollection('MODIS/MOD09Q1')
 
 print(mod, 'modis surf ref no cloud');
 
+// get MODIS NDVI ----
 var getModNDVI = function(image) {
   return image.normalizedDifference(['sur_refl_b02', 'sur_refl_b01'])
               .rename('modNDVI')
@@ -159,15 +146,8 @@ var getModNDVI = function(image) {
       //      .copyProperties(image, ['id']);
 }
 
-/**
- * modNDVI should be a list of NDVI images from MODIS
- * each image is one band only
- * there should be more MODIS NDVI than Landsat NDVI
- */
 var modNDVI = mod.map(getModNDVI);
 print(modNDVI, 'modis ndvi');
-Map.addLayer (modNDVI.mean(), ndviVis, 'modis ndvi mean');
-
 
 /** **************************************************
 *
@@ -206,7 +186,7 @@ var lsmodis=ee.ImageCollection(join.apply(lsNDVI, modNDVI, filter));
 print(lsmodis, 'landsat modis ndvi join')
 
 //create images with three bands(modNDVI,constant value of 1, lsNDVI)
-var ndvi=lsmodis.map(function(img){
+var joinedNDVI=lsmodis.map(function(img){
   var maxmodis=ee.ImageCollection.fromImages(img.get('ndvi')).select('modNDVI').max();
   return maxmodis.addBands(ee.Image(1))
                  .addBands(img.select('lsNDVI'))
@@ -214,7 +194,7 @@ var ndvi=lsmodis.map(function(img){
             //     .copyProperties(img,['doy'])
                  .copyProperties(img,[time]);
 });
-print (ndvi, 'landsat modis ndvi in one collection')
+print (joinedNDVI, 'landsat modis ndvi in one collection')
 
 /** **************************************************
 *
@@ -222,28 +202,90 @@ print (ndvi, 'landsat modis ndvi in one collection')
 *
 * ****************************************************/
 
-//linear regression between MODIS and Landsat
-//Landsat = slope * MODIS + intercept
-var coeffs = ndvi.reduce(ee.Reducer.linearRegression(2, 1)).select('coefficients');
+// Landsat = slope * MODIS + intercept
+var coeffs = joinedNDVI.reduce(ee.Reducer.linearRegression(2, 1)).select('coefficients');
 var slope = coeffs.arrayGet([0,0]);
 var intercept = coeffs.arrayGet([1,0]);
 
-//using slope and intercept to linear interpolate the images
-var fitted=ndvi.map(function(img){
-  // using the average value of original lsNDVI and fitted NDVI, kind of smooth the data,
-  // remove short variations do not compute the fitted NDVI for gaps
-  var fit1=img.select(2).add(intercept.add(img.select(0).multiply(slope))).multiply(0.5);
-  //filling the gaps using unmask
-  var fit2=fit1.unmask(intercept.add(img.select(0).multiply(slope))).rename('fittedNDVI');
+// Landsat_hat = slope_hat * MODIS + intercept_hat
+var fitted = joinedNDVI.map(function(img){
+  var fit1 = img.select(2).add(intercept.add(img.select(0).multiply(slope))).multiply(0.5);
+  var fit2 = fit1.unmask(intercept.add(img.select(0).multiply(slope))).rename('fittedNDVI');
   return fit2.copyProperties(img,[time]);
        //      .copyProperties(img,['doy']);
 });
 
-//compute 30m NDVI using MODIS and slope,intercept derived above.
-var fittedNDVI=modNDVI.map(function(img){
-  var result=intercept.add(img.select('modNDVI').multiply(slope)).rename('30mNDVI');
+var fitNDVI = modNDVI.map(function(img){
+  var   result = intercept.add(img.select('modNDVI').multiply(slope)).rename('30mNDVI');
   return result.copyProperties(img,[time])
                .copyProperties(img,['system:index']);
 });
-print(fittedNDVI, 'fitted NDVI');
-Map.addLayer(fittedNDVI.mean(), ndviVis, 'fitted NDVI');
+print(fitNDVI, 'fitted NDVI');
+
+
+/*****************************************************
+*
+*        Filter
+*
+* ****************************************************/
+var cdlFill = function(image){
+  var image1 = image.updateMask(cultMask)
+  var image2 = image1.updateMask(confMask)
+  return image2
+};
+
+var filterNDVI = fitNDVI.map(cdlFill);
+
+
+/** **************************************************
+*
+*        Project and Export
+*
+* ****************************************************/
+
+// reproject -------------
+
+var filterNDVI32611 = filterNDVI.map( function(image){
+        return image.reproject(myCRS, null, 30);
+});
+
+print (filterNDVI32611);
+
+// Export --------------
+// https://github.com/fitoprincipe/geetools-code-editor
+var col2drive = function(col, folder, region, scale) {
+    var n = col.size().getInfo();
+    var colList = col.toList(n);
+    for (var i = 0; i < n; i++) {
+      var img = ee.Image(colList.get(i));
+      var id = img.id().getInfo();
+      Export.image.toDrive({
+        image:img,
+        description: id,
+        folder: folder,
+        fileNamePrefix: id,
+        region: region,
+        scale: scale});
+    }};
+
+col2drive(filterNDVI32611, 'GEE/ndvi', aoi, 30)
+
+
+/*****************************************************
+*
+*       Visual Check
+*
+******************************************************/
+
+// Set up raster display parameters ----
+var lsVis = {min: 0,max: 5000, gamma: 1.4,
+              bands: ['B4', 'B3', 'B2'],
+};
+var ndviVis = {min: 0, max: 1,
+    palette: ['FF0000', 'FFC300', '6BA44E', '057811', '065292']
+};
+Map.centerObject(aoi, 9)
+Map.addLayer (ls.mean(), lsVis, 'landsat collection');
+Map.addLayer (lsNDVI.mean(), ndviVis, 'landsat ndvi mean');
+Map.addLayer (modNDVI.mean(), ndviVis, 'modis ndvi mean');
+Map.addLayer(fitNDVI.mean(), ndviVis, 'fitted NDVI');
