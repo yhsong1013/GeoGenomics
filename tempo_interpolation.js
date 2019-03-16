@@ -130,7 +130,7 @@ var maskCloudMod = function(image) {
 };
 
 // get MODIS::MOD09Q1
-var mod = ee.ImageCollection('MODIS/MOD09Q1')
+var mod = ee.ImageCollection('MODIS/006/MOD09Q1')
             .filterDate(startMillis, endMillis)
             .map(function(img){return img.clip(aoi)})
             .map(maskCloudMod);
