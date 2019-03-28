@@ -2,13 +2,13 @@
  * Making CDL time lapse video
  * @ yuanhong.song@wsu.edu (Yuanhong Song)
  *
- * Adapted frim E. Trochim:
+ * Adapted from E. Trochim:
  * https://code.earthengine.google.com/6270df443326ec0d90a18838bd91c5a5
  *
  * v3. explicit CDL corlor palette, 255 values
  */
 
-// define area of interest
+// DEFINE AREA OF INTEREST ----------------
 var polygon = ee.Geometry.Rectangle([-117.8101, 46.6028, -116.8488, 47.4231]);
 var aoi = ee.FeatureCollection(polygon);
 var bounds = aoi.geometry().bounds();
@@ -33,7 +33,12 @@ var cdl = ee.ImageCollection('USDA/NASS/CDL').filterBounds(aoi)
               // return image.copyProperties(image, ['system:time_start'])});
 print(cdl);
 
-
+// CREATING COLOR PALETTE ---------------
+// the following is a explicit color palette containing 255 colors
+// extracted from GEE cropland stantdard palette, and NA color values are
+// filled with white ("ffffff").
+// The palette is necessary to turn the image collection to 8-bit video correctly
+// Haven't found a more efficient way yet.
 var cdl_palette = [
   "ffff00", "ffd300", "ff2626", "00a8e2", "ff9e0a", "267000", "ffff00",
   "ffffff", "ffffff", "ffffff", "70a500", "00af49", "dda50a", "dda50a",
